@@ -11,6 +11,9 @@
         tailwind.config = {
             theme: {
                 extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'Noto Sans TC', 'sans-serif'],
+                    },
                     colors: {
                         'hokkaido-dark': '#0c4a6e', // 更深的沉靜藍
                         'hokkaido-main': '#3b82f6',
@@ -111,10 +114,10 @@
         <!-- 頂部 Header: 日期與標題 -->
         <header class="bg-white pt-12 pb-2 px-4 shadow-md z-20 flex-shrink-0">
             <div class="flex justify-between items-center mb-4">
-                <h1 class="text-2xl font-bold text-hokkaido-dark tracking-wider">HOKKAIDO <span class="text-xs font-normal block" :class="loading ? 'text-gray-400' : 'text-green-500'"><i class="fa-solid fa-cloud" :class="{'fa-bounce': loading, 'text-green-500': !loading}"></i> 雲端狀態</span></h1>
+                <h1 class="text-2xl font-bold text-hokkaido-dark tracking-wider">HOKKAIDO <span class="text-xs font-normal block" :class="isAuthReady ? 'text-green-500' : 'text-gray-400'"><i class="fa-solid fa-cloud" :class="{'fa-bounce': !isAuthReady, 'text-green-500': isAuthReady}"></i> 雲端狀態</span></h1>
                 <div class="text-right">
                     <span class="text-xs text-gray-400">當前匯率</span>
-                    <div @click="editRate" class="font-bold text-hokkaido-main text-sm cursor-pointer border-b border-dashed border-blue-300">1 JPY = {{ exchangeRate }} TWD</div>
+                    <div @click="showRateModal = true" class="font-bold text-hokkaido-main text-sm cursor-pointer border-b border-dashed border-blue-300">1 JPY = {{ exchangeRate }} TWD</div>
                 </div>
             </div>
 
@@ -213,7 +216,7 @@
                 <div class="bg-white p-5 rounded-3xl shadow-lg border-l-4 border-hokkaido-main">
                     <h3 class="text-gray-500 text-sm mb-4 font-medium flex justify-between">
                         <span>日幣換算台幣</span>
-                        <span @click="editRate" class="text-hokkaido-main cursor-pointer text-xs"><i class="fa-solid fa-gear"></i> 設定匯率</span>
+                        <span @click="showRateModal = true" class="text-hokkaido-main cursor-pointer text-xs"><i class="fa-solid fa-gear"></i> 設定匯率</span>
                     </h3>
                     <div class="flex items-center gap-3 bg-gray-50 p-3 rounded-xl">
                         <div class="relative flex-1">
@@ -284,6 +287,7 @@
                     <div v-for="(spot, idx) in backupSpots" :key="idx" class="bg-white p-3 rounded-xl shadow-sm border border-gray-100 relative group">
                         <button @click="removeBackup(idx)" class="absolute top-1 right-2 text-gray-300 hover:text-red-400"><i class="fa-solid fa-times"></i></button>
                         <p class="font-bold text-gray-800 text-sm truncate">{{ spot }}</p>
+                        <!-- 複製功能 (需要實作) -->
                         <button class="text-xs text-hokkaido-main mt-1 w-full text-left">
                             <i class="fa-regular fa-copy"></i> 點擊複製地點
                         </button>
@@ -338,71 +342,66 @@
                 </div>
             </div>
         </div>
+        
+        <!-- 新增：匯率編輯 Modal (Custom UI for editRate) -->
+        <div v-if="showRateModal" class="absolute inset-0 z-[500] bg-black/50 backdrop-blur-sm flex items-center justify-center">
+            <div class="bg-white w-11/12 max-w-sm rounded-xl p-6 shadow-2xl transform transition-all animate-fade-in-up">
+                <h3 class="font-bold text-xl mb-4 text-hokkaido-dark">設定當前匯率</h3>
+                
+                <p class="text-sm text-gray-500 mb-3">請輸入 **1 JPY** 可兌換多少 **TWD**。</p>
+                
+                <div class="flex items-center gap-2 bg-gray-50 p-3 rounded-xl border">
+                    <span class="font-bold text-lg text-gray-700">1 JPY =</span>
+                    <input type="number" step="0.0001" v-model="tempExchangeRate" class="flex-1 bg-transparent text-2xl font-bold text-hokkaido-dark outline-none focus:ring-0" placeholder="0.21">
+                    <span class="font-bold text-lg text-gray-700">TWD</span>
+                </div>
+
+                <div class="flex gap-3 mt-6">
+                    <button @click="showRateModal = false" class="flex-1 py-3 rounded-xl bg-gray-200 text-gray-600 font-bold">取消</button>
+                    <button @click="confirmEditRate" class="flex-1 py-3 rounded-xl bg-hokkaido-dark text-white font-bold shadow-lg shadow-blue-900/20">確認修改</button>
+                </div>
+            </div>
+        </div>
 
     </div>
 </div>
 
 <!-- Vue & Firebase Logic -->
 <script type="module">
-    import { createApp, ref, computed, nextTick } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.js';
+    import { createApp, ref, computed, nextTick, watch, onMounted } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.js';
     // Firebase SDK 導入
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-    import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
-    import { getFirestore, doc, onSnapshot, setDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+    import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+    import { getFirestore, doc, onSnapshot, setDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+    // 設置 Firebase Log 等級 (用於調試)
+    setLogLevel('Debug');
 
     // ----------------------------------------------------
-    // Canvas 環境變數取得 (確保認證和路徑正確)
+    // Canvas 環境變數取得
     // ----------------------------------------------------
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
     const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
     const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-    // Firebase initialization and Auth
+    // Firebase 實例變數
     let app, db, auth;
-    let dbInitialized = ref(false); // 追蹤 DB 是否初始化成功
     let docRef = null;
-
-    if (firebaseConfig) {
-        try {
-            app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            auth = getAuth(app);
-            dbInitialized.value = true;
-            
-            // 公共路徑: /artifacts/{appId}/public/data/trips/{docId}
-            const TRIP_DOC_ID = "hokkaido_trip_2025_shared"; 
-            docRef = doc(db, "artifacts", appId, "public", "data", "trips", TRIP_DOC_ID);
-            
-            // Asynchronously sign in (Anonymous or Custom Token)
-            (async () => {
-                try {
-                    if (initialAuthToken) {
-                        await signInWithCustomToken(auth, initialAuthToken);
-                    } else {
-                        await signInAnonymously(auth);
-                    }
-                    console.log("Firebase 認證成功 (已登入)。");
-                } catch (error) {
-                    console.error("Firebase 認證失敗:", error);
-                }
-            })();
-        } catch (e) {
-            console.error("錯誤：Firebase 初始化失敗", e);
-            dbInitialized.value = false;
-        }
-    } else {
-        console.error("錯誤：缺少 Firebase 配置資訊。App 將無法同步資料。");
-    }
-
+    const TRIP_DOC_ID = "hokkaido_trip_2025_shared"; 
+    
     // ----------------------------------------------------
 
     createApp({
         setup() {
             const loading = ref(true);
+            const isAuthReady = ref(false); 
+            const dbInitialized = ref(false);
             const currentTab = ref('schedule');
             const currentDay = ref(0);
             const showAddModal = ref(false);
-            const exchangeRate = ref(0.21); // 預設匯率
+            const showRateModal = ref(false); // 新增：匯率模態框狀態
+            const exchangeRate = ref(0.21); 
+            const tempExchangeRate = ref(0.21); // 新增：用於模態框輸入
             const calcJpy = ref('');
             const mapInstance = ref(null);
             const markers = ref([]);
@@ -425,49 +424,113 @@
             const newItem = ref({ time: '10:00', location: '', note: '' });
             const newExpense = ref({ item: '', amount: '' });
             const newBackup = ref('');
-
-            // --- Firebase 監聽 ---
-            if (docRef) {
-                onSnapshot(docRef, (docSnap) => {
+            
+            // --- Firebase 初始化與認證 ---
+            onMounted(() => {
+                if (!firebaseConfig) {
+                    console.error("錯誤：缺少 Firebase 配置資訊。App 將無法同步資料。");
                     loading.value = false;
-                    if (docSnap.exists()) {
-                        const data = docSnap.data();
-                        itineraryData.value = data.itinerary || {};
-                        expenses.value = data.expenses || [];
-                        backupSpots.value = data.backups || [];
-                        if(data.rate) exchangeRate.value = data.rate;
-                    } else {
-                        // 如果是第一次使用，建立預設資料結構並寫入
-                        syncToCloud();
-                    }
-                    if(currentTab.value === 'map') updateMapMarkers();
-                }, (error) => {
-                     // 捕獲錯誤，避免應用程式停止，並將 loading 設為 false
-                     console.error("Firebase 連線錯誤或權限被拒絕:", error);
-                     loading.value = false;
-                });
-            }
+                    return;
+                }
+                
+                try {
+                    app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
+                    dbInitialized.value = true;
+                    
+                    docRef = doc(db, "artifacts", appId, "public", "data", "trips", TRIP_DOC_ID);
 
+                    // 1. 設置認證狀態監聽器
+                    onAuthStateChanged(auth, async (user) => {
+                        if (!user) {
+                            // 如果沒有用戶，嘗試匿名登入 (確保總是有個 user.uid)
+                            try {
+                                await signInAnonymously(auth);
+                                console.log("Firebase 認證成功 (匿名登入)。");
+                                isAuthReady.value = true;
+                            } catch (error) {
+                                console.error("Firebase 認證失敗:", error);
+                            }
+                        } else {
+                            // 已經有用戶 (可能是自訂 token 登入或匿名登入成功)
+                            isAuthReady.value = true;
+                            console.log("Firebase 認證狀態就緒。");
+                        }
+                    });
+
+                    // 2. 處理自訂 Auth Token (必須在 onAuthStateChanged 外部執行)
+                    if (initialAuthToken) {
+                         signInWithCustomToken(auth, initialAuthToken).catch(error => {
+                             console.error("自訂 Token 登入失敗:", error);
+                         });
+                    }
+                    
+                } catch (e) {
+                    console.error("錯誤：Firebase 初始化失敗", e);
+                    dbInitialized.value = false;
+                    loading.value = false;
+                }
+            });
+
+            // --- 監聽認證狀態，認證就緒後才啟動資料監聽 ---
+            watch(isAuthReady, (ready) => {
+                if (ready && docRef) {
+                    // 啟動資料實時監聽
+                    onSnapshot(docRef, (docSnap) => {
+                        loading.value = false;
+                        if (docSnap.exists()) {
+                            const data = docSnap.data();
+                            // 載入資料
+                            itineraryData.value = data.itinerary || {};
+                            expenses.value = data.expenses || [];
+                            backupSpots.value = data.backups || [];
+                            if(data.rate) {
+                                exchangeRate.value = parseFloat(data.rate);
+                                tempExchangeRate.value = parseFloat(data.rate); // 同步給模態框
+                            }
+                            
+                            console.log("資料已從雲端同步！");
+                        } else {
+                            // 首次使用，建立預設資料結構
+                            syncToCloud();
+                        }
+                        if(currentTab.value === 'map') updateMapMarkers();
+                    }, (error) => {
+                         console.error("Firestore 連線或權限錯誤:", error);
+                         loading.value = false;
+                    });
+                }
+            });
+
+            // --- 資料同步函數 ---
             const syncToCloud = async () => {
-                if (!docRef) return console.warn("Firebase 未初始化，無法同步。");
+                if (!docRef || !isAuthReady.value) {
+                    console.warn("認證未就緒或 docRef 不存在，跳過同步。");
+                    return;
+                }
+                
                 try {
                     // 確保行程按時間排序再儲存
                     const dateKey = days[currentDay.value].fullDate;
                     if(itineraryData.value[dateKey]) {
                         itineraryData.value[dateKey].sort((a,b)=>a.time.localeCompare(b.time));
                     }
+                    
+                    // 儲存所有同步資料 (使用 .value 確保取到最新的反應性數據)
                     await setDoc(docRef, {
                         itinerary: itineraryData.value,
                         expenses: expenses.value,
                         backups: backupSpots.value,
                         rate: exchangeRate.value
                     }, { merge: true });
+                    console.log("資料成功寫入雲端。");
                 } catch (error) {
                     console.error("寫入 Firebase 失敗:", error);
                 }
             };
 
-            // --- 操作邏輯 (與前版相同) ---
+            // --- 操作邏輯 ---
             const currentItinerary = computed(() => {
                 const dateKey = days[currentDay.value].fullDate;
                 return itineraryData.value[dateKey] || [];
@@ -475,9 +538,10 @@
             const totalSpentTwd = computed(() => (expenses.value.reduce((a,c)=>a+Number(c.amount),0)*exchangeRate.value).toFixed(0));
 
             const addItem = () => {
-                if(!newItem.value.location) return;
+                if(!newItem.value.location || !newItem.value.time) return;
                 const dateKey = days[currentDay.value].fullDate;
                 if(!itineraryData.value[dateKey]) itineraryData.value[dateKey] = [];
+                // 確保在 push 之前，itineraryData.value 是最新的
                 itineraryData.value[dateKey].push({...newItem.value});
                 syncToCloud(); 
                 showAddModal.value = false;
@@ -491,7 +555,7 @@
             };
 
             const addExpense = () => {
-                if(!newExpense.value.amount || isNaN(newExpense.value.amount)) return;
+                if(!newExpense.value.amount || isNaN(newExpense.value.amount) || Number(newExpense.value.amount) <= 0) return;
                 expenses.value.unshift({...newExpense.value, amount: Number(newExpense.value.amount)});
                 newExpense.value = {item:'', amount:''};
                 syncToCloud();
@@ -501,9 +565,17 @@
             const addBackup = () => { if(newBackup.value){ backupSpots.value.push(newBackup.value); newBackup.value=''; syncToCloud(); }};
             const removeBackup = (idx) => { backupSpots.value.splice(idx,1); syncToCloud(); };
             
-            const editRate = () => {
-                const newRate = prompt("輸入新的日幣對台幣匯率 (例如 0.21)", exchangeRate.value);
-                if(newRate) { exchangeRate.value = parseFloat(newRate); syncToCloud(); }
+            // 新增：匯率模態框確認函數 (替代舊的 editRate)
+            const confirmEditRate = () => {
+                const newRate = parseFloat(tempExchangeRate.value);
+                if (newRate && newRate > 0) {
+                    exchangeRate.value = newRate;
+                    syncToCloud();
+                    showRateModal.value = false;
+                } else {
+                    // 警告使用者輸入無效
+                    console.warn("輸入的匯率無效，請輸入一個正數。");
+                }
             };
 
             const selectDay = (idx) => { currentDay.value = idx; updateMapMarkers(); };
@@ -517,25 +589,32 @@
 
             // 地圖功能 (使用 Leaflet)
             const initMap = () => {
-                // 札幌座標
                 mapInstance.value = L.map('map').setView([43.0618, 141.3545], 13); 
-                L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png').addTo(mapInstance.value);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 19,
+                    attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                }).addTo(mapInstance.value);
             };
             const updateMapMarkers = () => {
                 if(!mapInstance.value) return;
                 markers.value.forEach(m => mapInstance.value.removeLayer(m));
                 markers.value = [];
-                // 簡易模擬座標，實際應用需使用地理編碼 API
-                const mockCoords = {'札幌':[43.0618,141.3545], '小樽':[43.1907,140.9947]};
+                // 簡易模擬座標
+                const mockCoords = {'札幌':[43.0618,141.3545], '小樽':[43.1907,140.9947], '函館':[41.7687,140.7288], '旭川':[43.7607,142.3686]};
                 currentItinerary.value.forEach(item => {
                     let latLng = mockCoords[Object.keys(mockCoords).find(k=>item.location.includes(k))] || [43.0618+(Math.random()-.5)*.05, 141.3545+(Math.random()-.5)*.05];
                     markers.value.push(L.marker(latLng).addTo(mapInstance.value).bindPopup(item.location));
                 });
+                
+                if (markers.value.length > 0) {
+                    const group = new L.featureGroup(markers.value);
+                    mapInstance.value.fitBounds(group.getBounds().pad(0.5)); 
+                }
             };
             const locateUser = () => {
                  if (navigator.geolocation) {
                      navigator.geolocation.getCurrentPosition(pos => {
-                         L.circleMarker([pos.coords.latitude, pos.coords.longitude], {color:'#3b82f6', radius:8}).addTo(mapInstance.value).bindPopup('我在這！').openPopup();
+                         L.circleMarker([pos.coords.latitude, pos.coords.longitude], {color:'#f43f5e', radius:8, fillOpacity: 0.8}).addTo(mapInstance.value).bindPopup('我在這！').openPopup();
                          mapInstance.value.setView([pos.coords.latitude, pos.coords.longitude], 15);
                      }, (error) => {
                         console.error("無法取得您的位置:", error);
@@ -546,12 +625,14 @@
             };
 
             return {
-                loading, currentTab, currentDay, days, currentItinerary, showAddModal, newItem, exchangeRate, calcJpy, expenses, newExpense, backupSpots, newBackup, totalSpentTwd,
-                dbInitialized, // 讓 Vue 能夠顯示 DB 初始化狀態
-                switchTab, selectDay, addItem, deleteItem, addExpense, removeExpense, addBackup, removeBackup, editRate, locateUser
+                loading, currentTab, currentDay, days, currentItinerary, showAddModal, showRateModal, newItem, 
+                exchangeRate, tempExchangeRate, calcJpy, expenses, newExpense, backupSpots, newBackup, totalSpentTwd,
+                dbInitialized, isAuthReady, 
+                switchTab, selectDay, addItem, deleteItem, addExpense, removeExpense, addBackup, removeBackup, confirmEditRate, locateUser
             };
         }
     }).mount('#app');
 </script>
 </body>
 </html>
+
